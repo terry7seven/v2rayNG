@@ -113,6 +113,8 @@
     <string name="server_lab_bandwidth_up">Исходящая пропускная способность (допускаются: k/m/g/t)</string>
     <string name="server_lab_xhttp_mode">Режим XHTTP</string>
     <string name="server_lab_xhttp_extra">Необработанный JSON XHTTP Extra, формат: { XHTTPObject }</string>
+    <string name="server_lab_ech_config_list">EchConfigList</string>
+    <string name="server_lab_ech_force_query">EchForceQuery</string>
 
     <!-- UserAssetActivity -->
     <string name="toast_asset_copy_failed">Невозможно скопировать файл, используйте файловый менеджер</string>
@@ -194,8 +196,11 @@
     <string name="title_pref_dns_hosts">Узлы DNS (формат: домен:адрес,…)</string>
     <string name="summary_pref_dns_hosts">домен:адрес,…</string>
 
-    <string name="title_pref_delay_test_url">Сервис проверки задержки (HTTP/HTTPS)</string>
+    <string name="title_pref_delay_test_url">Сервис проверки задержки</string>
     <string name="summary_pref_delay_test_url">URL</string>
+
+    <string name="title_pref_ip_api_url">Current connection info test url</string>
+    <string name="summary_pref_ip_api_url">Url</string>
 
     <string name="title_pref_proxy_sharing_enabled">Разрешать подключения из LAN</string>
     <string name="summary_pref_proxy_sharing_enabled">Другие устройства могут подключаться, используя ваш IP-адрес, чтобы использовать локальный прокси. Используйте только в доверенной сети, чтобы избежать несанкционированного подключения.</string>
@@ -232,12 +237,8 @@
     <string name="title_source_code">Исходный код</string>
     <string name="title_oss_license">Лицензии открытого исходного кода</string>
     <string name="title_tg_channel">Telegram-канал</string>
-    <string name="title_configuration_backup">Резервирование конфигурации</string>
-    <string name="title_configuration_restore">Восстановление конфигурации</string>
-    <string name="title_configuration_share">Поделиться конфигурацией</string>
 
     <string name="title_pref_promotion">Содействие</string>
-    <string name="summary_pref_promotion">Содействие, нажмите для получения подробной информации (пожертвование может быть удалено)</string>
 
     <string name="title_pref_auto_update_subscription">Автоматически обновлять подписки</string>
     <string name="summary_pref_auto_update_subscription">Автоматическое обновление подписок в фоновом режиме с указанным интервалом. В зависимости от устройства эта функция может работать не всегда.</string>
@@ -342,6 +343,18 @@
     <string name="title_policy_group_subscription_id">From subscription group</string>
     <string name="title_policy_group_subscription_filter">Remarks regular filter</string>
 
+    <!-- BackupActivity -->
+    <string name="title_configuration_backup_restore">Backup &amp; Restore</string>
+    <string name="title_configuration_backup">Резервирование конфигурации</string>
+    <string name="title_configuration_restore">Восстановление конфигурации</string>
+    <string name="title_configuration_share">Поделиться конфигурацией</string>
+    <string name="title_webdav_config_setting">WebDAV Settings</string>
+    <string name="title_webdav_config_setting_unknown">Please configure WebDAV first.</string>
+    <string name="title_webdav_url">WebDAV server URL</string>
+    <string name="title_webdav_user">Username</string>
+    <string name="title_webdav_pass">Password</string>
+    <string name="title_webdav_remote_path">Remote directory (optional)</string>
+
     <string-array name="share_method">
         <item>QR-код</item>
         <item>Экспорт в буфер обмена</item>
@@ -394,6 +407,10 @@
         <item>Наименьшая задержка</item>
         <item>Наименьшая нагрузка</item>
     </string-array>
-    <string name="pre_resolving_domain">Предварительное определение домена…</string>
+
+    <string-array name="config_backup_options">
+        <item>Local</item>
+        <item>WebDAV</item>
+    </string-array>
 
 </resources>
