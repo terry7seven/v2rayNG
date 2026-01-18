@@ -110,13 +110,6 @@ object AngConfigManager {
             if (guid == null) return -1
             val result = V2rayConfigManager.getV2rayConfig(context, guid)
             if (result.status) {
-                val config = MmkvManager.decodeServerConfig(guid)
-                if (config?.configType == EConfigType.HYSTERIA2) {
-                    val socksPort = Utils.findFreePort(listOf(100 + SettingsManager.getSocksPort(), 0))
-                    val hy2Config = Hysteria2Fmt.toNativeConfig(config, socksPort)
-                    Utils.setClipboard(context, JsonUtil.toJsonPretty(hy2Config) + "\n" + result.content)
-                    return 0
-                }
                 Utils.setClipboard(context, result.content)
             } else {
                 return -1
@@ -149,6 +142,7 @@ object AngConfigManager {
                 EConfigType.WIREGUARD -> WireguardFmt.toUri(config)
                 EConfigType.HYSTERIA2 -> Hysteria2Fmt.toUri(config)
                 EConfigType.POLICYGROUP -> ""
+                else -> {}
             }
         } catch (e: Exception) {
             Log.e(AppConfig.TAG, "Failed to share config for GUID: $guid", e)
@@ -446,7 +440,13 @@ object AngConfigManager {
             if (configText.isEmpty()) {
                 return 0
             }
-            return parseConfigViaSub(configText, it.first, false)
+            val count = parseConfigViaSub(configText, it.first, false)
+            if (count > 0) {
+                it.second.lastUpdated = System.currentTimeMillis()
+                MmkvManager.encodeSubscription(it.first, it.second)
+                Log.i(AppConfig.TAG, "Subscription updated: ${it.second.remarks}, $count configs")
+            }
+            return count
         } catch (e: Exception) {
             Log.e(AppConfig.TAG, "Failed to update config via subscription", e)
             return 0
