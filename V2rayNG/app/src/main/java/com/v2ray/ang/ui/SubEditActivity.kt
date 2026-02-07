@@ -13,6 +13,7 @@ import com.v2ray.ang.dto.SubscriptionItem
 import com.v2ray.ang.extension.toast
 import com.v2ray.ang.extension.toastSuccess
 import com.v2ray.ang.handler.MmkvManager
+import com.v2ray.ang.handler.SettingsChangeManager
 import com.v2ray.ang.util.Utils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -27,9 +28,10 @@ class SubEditActivity : BaseActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(binding.root)
-        title = getString(R.string.title_sub_setting)
+        //setContentView(binding.root)
+        setContentViewWithToolbar(binding.root, showHomeAsUp = true, title = getString(R.string.title_sub_setting))
 
+        SettingsChangeManager.makeSetupGroupTab()
         val subItem = MmkvManager.decodeSubscription(editSubId)
         if (subItem != null) {
             bindingServer(subItem)

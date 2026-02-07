@@ -1,4 +1,4 @@
-package com.v2ray.ang.dto
+package com.v2ray.ang.enums
 
 enum class NetworkType(val type: String) {
     TCP("tcp"),
@@ -10,7 +10,8 @@ enum class NetworkType(val type: String) {
     H2("h2"),
 
     //QUIC("quic"),
-    GRPC("grpc");
+    GRPC("grpc"),
+    HYSTERIA("hysteria");
 
     companion object {
         fun fromString(type: String?) = entries.find { it.type == type } ?: TCP

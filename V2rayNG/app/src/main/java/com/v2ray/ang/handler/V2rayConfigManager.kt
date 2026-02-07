@@ -3,11 +3,11 @@ package com.v2ray.ang.handler
 import android.content.Context
 import android.text.TextUtils
 import android.util.Log
+import com.google.gson.JsonArray
 import com.v2ray.ang.AppConfig
-import com.v2ray.ang.R
 import com.v2ray.ang.dto.ConfigResult
-import com.v2ray.ang.dto.EConfigType
-import com.v2ray.ang.dto.NetworkType
+import com.v2ray.ang.enums.EConfigType
+import com.v2ray.ang.enums.NetworkType
 import com.v2ray.ang.dto.ProfileItem
 import com.v2ray.ang.dto.RulesetItem
 import com.v2ray.ang.dto.V2rayConfig
@@ -16,7 +16,9 @@ import com.v2ray.ang.dto.V2rayConfig.OutboundBean.OutSettingsBean
 import com.v2ray.ang.dto.V2rayConfig.OutboundBean.StreamSettingsBean
 import com.v2ray.ang.dto.V2rayConfig.RoutingBean.RulesBean
 import com.v2ray.ang.extension.isNotNullEmpty
+import com.v2ray.ang.extension.nullIfBlank
 import com.v2ray.ang.fmt.HttpFmt
+import com.v2ray.ang.fmt.Hysteria2Fmt
 import com.v2ray.ang.fmt.ShadowsocksFmt
 import com.v2ray.ang.fmt.SocksFmt
 import com.v2ray.ang.fmt.TrojanFmt
@@ -29,6 +31,7 @@ import com.v2ray.ang.util.Utils
 
 object V2rayConfigManager {
     private var initConfigCache: String? = null
+    private var initConfigCacheWithTun: String? = null
 
     //region get config function
 
@@ -43,7 +46,7 @@ object V2rayConfigManager {
         try {
             val config = MmkvManager.decodeServerConfig(guid) ?: return ConfigResult(false)
             return if (config.configType == EConfigType.CUSTOM) {
-                getV2rayCustomConfig(guid, config)
+                getV2rayCustomConfig(context, guid, config)
             } else if (config.configType == EConfigType.POLICYGROUP) {
                 getV2rayGroupConfig(context, guid, config)
             } else {
@@ -66,7 +69,7 @@ object V2rayConfigManager {
         try {
             val config = MmkvManager.decodeServerConfig(guid) ?: return ConfigResult(false)
             return if (config.configType == EConfigType.CUSTOM) {
-                getV2rayCustomConfig(guid, config)
+                getV2rayCustomConfig(context, guid, config)
             } else if (config.configType == EConfigType.POLICYGROUP) {
                 // The number of policy groups will not be very large, so no special handling is needed.
                 getV2rayGroupConfig(context, guid, config)
@@ -86,9 +89,43 @@ object V2rayConfigManager {
      * @param config The profile item containing the configuration details.
      * @return A ConfigResult object containing the result of the configuration retrieval.
      */
-    private fun getV2rayCustomConfig(guid: String, config: ProfileItem): ConfigResult {
+    private fun getV2rayCustomConfig(context: Context, guid: String, config: ProfileItem): ConfigResult {
         val raw = MmkvManager.decodeServerRaw(guid) ?: return ConfigResult(false)
-        return ConfigResult(true, guid, raw)
+        val result = ConfigResult(true, guid, raw)
+        if (!needTun()) {
+            return result
+        }
+
+        // check if tun inbound exists
+        val json = JsonUtil.parseString(raw) ?: return result
+        val inboundsJson = if (json.has("inbounds") && json.get("inbounds")?.isJsonNull == false) {
+            json.getAsJsonArray("inbounds")
+        } else {
+            JsonArray()
+        }
+
+        for (i in 0 until inboundsJson.size()) {
+            val elem = inboundsJson.get(i)
+            if (elem.isJsonObject) {
+                val inb = elem.asJsonObject
+                val tag = if (inb.has("tag") && inb.get("tag")?.isJsonNull == false) inb.get("tag").asString else ""
+                if (tag == "tun") return result
+            }
+        }
+
+        // add tun inbound from template
+        val templateConfig = initV2rayConfig(context) ?: return result
+        val inboundTun = templateConfig.inbounds.firstOrNull { it.tag == "tun" } ?: return result
+        inboundTun.settings?.mtu = SettingsManager.getVpnMtu()
+
+        // add to json
+        inboundsJson.add(JsonUtil.parseString(JsonUtil.toJson(inboundTun)))
+        if (inboundsJson.size() == 1) {
+            json.add("inbounds", inboundsJson)
+        }
+
+        val updatedRaw = JsonUtil.toJsonPretty(json) ?: return result
+        return ConfigResult(true, guid, updatedRaw)
     }
 
     /**
@@ -160,12 +197,8 @@ object V2rayConfigManager {
 
         getInbounds(v2rayConfig)
 
-        if (config.configType == EConfigType.HYSTERIA2) {
-            result.socksPort = getPlusOutbounds(v2rayConfig, config) ?: return result
-        } else {
-            getOutbounds(v2rayConfig, config) ?: return result
-            getMoreOutbounds(v2rayConfig, config.subscriptionId)
-        }
+        getOutbounds(v2rayConfig, config) ?: return result
+        getMoreOutbounds(v2rayConfig, config.subscriptionId)
 
         getRouting(v2rayConfig)
 
@@ -196,7 +229,6 @@ object V2rayConfigManager {
         val validConfigs = configList.asSequence().filter { it.server.isNotNullEmpty() }
             .filter { !Utils.isPureIpAddress(it.server!!) || Utils.isValidUrl(it.server!!) }
             .filter { it.configType != EConfigType.CUSTOM }
-            .filter { it.configType != EConfigType.HYSTERIA2 }
             .filter { it.configType != EConfigType.POLICYGROUP }
             .toList()
 
@@ -270,12 +302,8 @@ object V2rayConfigManager {
 
         val v2rayConfig = initV2rayConfig(context) ?: return result
 
-        if (config.configType == EConfigType.HYSTERIA2) {
-            result.socksPort = getPlusOutbounds(v2rayConfig, config) ?: return result
-        } else {
-            getOutbounds(v2rayConfig, config) ?: return result
-            getMoreOutbounds(v2rayConfig, config.subscriptionId)
-        }
+        getOutbounds(v2rayConfig, config) ?: return result
+        getMoreOutbounds(v2rayConfig, config.subscriptionId)
 
         v2rayConfig.log.loglevel = MmkvManager.decodeSettingsString(AppConfig.PREF_LOGLEVEL) ?: "warning"
         v2rayConfig.inbounds.clear()
@@ -306,11 +334,20 @@ object V2rayConfigManager {
      * @return V2rayConfig object parsed from the JSON configuration, or null if the configuration is empty
      */
     private fun initV2rayConfig(context: Context): V2rayConfig? {
-        val assets = initConfigCache ?: Utils.readTextFromAssets(context, "v2ray_config.json")
-        if (TextUtils.isEmpty(assets)) {
-            return null
+        var assets = ""
+        if (needTun()) {
+            assets = initConfigCacheWithTun ?: Utils.readTextFromAssets(context, "v2ray_config_with_tun.json")
+            if (TextUtils.isEmpty(assets)) {
+                return null
+            }
+            initConfigCacheWithTun = assets
+        } else {
+            assets = initConfigCache ?: Utils.readTextFromAssets(context, "v2ray_config.json")
+            if (TextUtils.isEmpty(assets)) {
+                return null
+            }
+            initConfigCache = assets
         }
-        initConfigCache = assets
         val config = JsonUtil.fromJson(assets, V2rayConfig::class.java)
         return config
     }
@@ -320,6 +357,10 @@ object V2rayConfigManager {
 
 
     //region some sub function
+
+    private fun needTun(): Boolean {
+        return SettingsManager.isVpnMode() && !SettingsManager.isUsingHevTun()
+    }
 
     /**
      * Configures the inbound settings for V2ray.
@@ -332,34 +373,38 @@ object V2rayConfigManager {
     private fun getInbounds(v2rayConfig: V2rayConfig): Boolean {
         try {
             val socksPort = SettingsManager.getSocksPort()
+            val inbound1 = v2rayConfig.inbounds[0]
 
-            v2rayConfig.inbounds.forEach { curInbound ->
-                if (MmkvManager.decodeSettingsBool(AppConfig.PREF_PROXY_SHARING) != true) {
-                    //bind all inbounds to localhost if the user requests
-                    curInbound.listen = AppConfig.LOOPBACK
-                }
+            if (MmkvManager.decodeSettingsBool(AppConfig.PREF_PROXY_SHARING) != true) {
+                inbound1.listen = AppConfig.LOOPBACK
             }
-            v2rayConfig.inbounds[0].port = socksPort
+            inbound1.port = socksPort
             val fakedns = MmkvManager.decodeSettingsBool(AppConfig.PREF_FAKE_DNS_ENABLED) == true
             val sniffAllTlsAndHttp =
                 MmkvManager.decodeSettingsBool(AppConfig.PREF_SNIFFING_ENABLED, true) != false
-            v2rayConfig.inbounds[0].sniffing?.enabled = fakedns || sniffAllTlsAndHttp
-            v2rayConfig.inbounds[0].sniffing?.routeOnly =
+            inbound1.sniffing?.enabled = fakedns || sniffAllTlsAndHttp
+            inbound1.sniffing?.routeOnly =
                 MmkvManager.decodeSettingsBool(AppConfig.PREF_ROUTE_ONLY_ENABLED, false)
             if (!sniffAllTlsAndHttp) {
-                v2rayConfig.inbounds[0].sniffing?.destOverride?.clear()
+                inbound1.sniffing?.destOverride?.clear()
             }
             if (fakedns) {
-                v2rayConfig.inbounds[0].sniffing?.destOverride?.add("fakedns")
+                inbound1.sniffing?.destOverride?.add("fakedns")
             }
 
-            if (Utils.isXray()) {
-                v2rayConfig.inbounds.removeAt(1)
-            } else {
-                val httpPort = SettingsManager.getHttpPort()
-                v2rayConfig.inbounds[1].port = httpPort
+            if (!Utils.isXray()) {
+                val inbound2 = JsonUtil.fromJson(JsonUtil.toJson(inbound1), V2rayConfig.InboundBean::class.java) ?: return false
+                inbound2.tag = EConfigType.HTTP.name.lowercase()
+                inbound2.port = SettingsManager.getHttpPort()
+                inbound2.protocol = EConfigType.HTTP.name.lowercase()
+                v2rayConfig.inbounds.add(inbound2)
             }
 
+            if (needTun()) {
+                val inboundTun = v2rayConfig.inbounds.firstOrNull { e -> e.tag == "tun" }
+                inboundTun?.settings?.mtu = SettingsManager.getVpnMtu()
+                inboundTun?.sniffing = inbound1.sniffing
+            }
         } catch (e: Exception) {
             Log.e(AppConfig.TAG, "Failed to configure inbounds", e)
             return false
@@ -480,16 +525,26 @@ object V2rayConfigManager {
                 )
             }
 
-            // if (MmkvManager.decodeSettingsBool(AppConfig.PREF_USE_HEV_TUNNEL, true)) {
-            //hev-socks5-tunnel dns routing
-            v2rayConfig.routing.rules.add(
-                0, RulesBean(
-                    inboundTag = arrayListOf("socks"),
-                    outboundTag = "dns-out",
-                    port = "53",
-                    type = "field"
-                )
-            )
+            if(SettingsManager.isVpnMode()) {
+                if (SettingsManager.isUsingHevTun()) {
+                    //hev-socks5-tunnel dns routing
+                    v2rayConfig.routing.rules.add(
+                        0, RulesBean(
+                            inboundTag = arrayListOf("socks"),
+                            outboundTag = "dns-out",
+                            port = "53",
+                        )
+                    )
+                } else {
+                    v2rayConfig.routing.rules.add(
+                        0, RulesBean(
+                            inboundTag = arrayListOf("tun"),
+                            outboundTag = "dns-out",
+                            port = "53",
+                        )
+                    )
+                }
+            }
 
             // DNS outbound
             if (v2rayConfig.outbounds.none { e -> e.protocol == "dns" && e.tag == "dns-out" }) {
@@ -648,44 +703,6 @@ object V2rayConfigManager {
     }
 
     /**
-     * Configures special outbound settings for Hysteria2 protocol.
-     *
-     * Creates a SOCKS outbound connection on a free port for protocols requiring special handling.
-     *
-     * @param v2rayConfig The V2ray configuration object to be modified
-     * @param config The profile item containing connection details
-     * @return The port number for the SOCKS connection, or null if there was an error
-     */
-    private fun getPlusOutbounds(v2rayConfig: V2rayConfig, config: ProfileItem): Int? {
-        try {
-            val socksPort = Utils.findFreePort(listOf(100 + SettingsManager.getSocksPort(), 0))
-
-            val outboundNew = OutboundBean(
-                mux = null,
-                protocol = EConfigType.SOCKS.name.lowercase(),
-                settings = OutSettingsBean(
-                    servers = listOf(
-                        OutSettingsBean.ServersBean(
-                            address = AppConfig.LOOPBACK,
-                            port = socksPort
-                        )
-                    )
-                )
-            )
-            if (v2rayConfig.outbounds.isNotEmpty()) {
-                v2rayConfig.outbounds[0] = outboundNew
-            } else {
-                v2rayConfig.outbounds.add(outboundNew)
-            }
-
-            return socksPort
-        } catch (e: Exception) {
-            Log.e(AppConfig.TAG, "Failed to configure plusOutbound", e)
-            return null
-        }
-    }
-
-    /**
      * Configures additional outbound connections for proxy chaining.
      *
      * Sets up previous and next proxies in a subscription for advanced routing capabilities.
@@ -824,65 +841,93 @@ object V2rayConfigManager {
      * Configures load balancing settings for the V2ray configuration.
      *
      * @param v2rayConfig The V2ray configuration object to be modified with balancing settings
+     * @param config The profile item containing policy group settings
      */
     private fun getBalance(v2rayConfig: V2rayConfig, config: ProfileItem) {
         try {
             v2rayConfig.routing.rules.forEach { rule ->
                 if (rule.outboundTag == "proxy") {
                     rule.outboundTag = null
-                    rule.balancerTag = "proxy-round"
+                    rule.balancerTag = AppConfig.TAG_BALANCER
                 }
             }
 
-            if (config.policyGroupType == "0") {
-                val balancer = V2rayConfig.RoutingBean.BalancerBean(
-                    tag = "proxy-round",
-                    selector = listOf("proxy-"),
-                    strategy = V2rayConfig.RoutingBean.StrategyObject(
-                        type = "leastPing"
+            val lstSelector =  listOf("proxy-")
+            when (config.policyGroupType) {
+                // Least Ping goto else
+                "1" -> {
+                    // Least Load
+                    val balancer = V2rayConfig.RoutingBean.BalancerBean(
+                        tag = AppConfig.TAG_BALANCER,
+                        selector = lstSelector,
+                        strategy = V2rayConfig.RoutingBean.StrategyObject(
+                            type = "leastLoad"
+                        )
                     )
-                )
-                v2rayConfig.routing.balancers = listOf(balancer)
-                v2rayConfig.observatory = V2rayConfig.ObservatoryObject(
-                    subjectSelector = listOf("proxy-"),
-                    probeUrl = MmkvManager.decodeSettingsString(AppConfig.PREF_DELAY_TEST_URL) ?: AppConfig.DELAY_TEST_URL,
-                    probeInterval = "3m",
-                    enableConcurrency = true
-                )
-            } else {
-                val balancer = V2rayConfig.RoutingBean.BalancerBean(
-                    tag = "proxy-round",
-                    selector = listOf("proxy-"),
-                    strategy = V2rayConfig.RoutingBean.StrategyObject(
-                        type = "leastLoad"
+                    v2rayConfig.routing.balancers = listOf(balancer)
+                    v2rayConfig.burstObservatory = V2rayConfig.BurstObservatoryObject(
+                        subjectSelector = lstSelector,
+                        pingConfig = V2rayConfig.BurstObservatoryObject.PingConfigObject(
+                            destination = MmkvManager.decodeSettingsString(AppConfig.PREF_DELAY_TEST_URL) ?: AppConfig.DELAY_TEST_URL,
+                            interval = "5m",
+                            sampling = 2,
+                            timeout = "30s"
+                        )
                     )
-                )
-                v2rayConfig.routing.balancers = listOf(balancer)
-                v2rayConfig.burstObservatory = V2rayConfig.BurstObservatoryObject(
-                    subjectSelector = listOf("proxy-"),
-                    pingConfig = V2rayConfig.BurstObservatoryObject.PingConfigObject(
-                        destination = MmkvManager.decodeSettingsString(AppConfig.PREF_DELAY_TEST_URL) ?: AppConfig.DELAY_TEST_URL,
-                        interval = "5m",
-                        sampling = 2,
-                        timeout = "30s"
+                }
+                "2" -> {
+                    // Random
+                    val balancer = V2rayConfig.RoutingBean.BalancerBean(
+                        tag = AppConfig.TAG_BALANCER,
+                        selector = lstSelector,
+                        strategy = V2rayConfig.RoutingBean.StrategyObject(
+                            type = "random"
+                        )
                     )
-                )
+                    v2rayConfig.routing.balancers = listOf(balancer)
+                }
+                "3" -> {
+                    // Round Robin
+                    val balancer = V2rayConfig.RoutingBean.BalancerBean(
+                        tag = AppConfig.TAG_BALANCER,
+                        selector = lstSelector,
+                        strategy = V2rayConfig.RoutingBean.StrategyObject(
+                            type = "roundRobin"
+                        )
+                    )
+                    v2rayConfig.routing.balancers = listOf(balancer)
+                }
+                else -> {
+                    // Default: Least Ping
+                    val balancer = V2rayConfig.RoutingBean.BalancerBean(
+                        tag = AppConfig.TAG_BALANCER,
+                        selector = lstSelector,
+                        strategy = V2rayConfig.RoutingBean.StrategyObject(
+                            type = "leastPing"
+                        )
+                    )
+                    v2rayConfig.routing.balancers = listOf(balancer)
+                    v2rayConfig.observatory = V2rayConfig.ObservatoryObject(
+                        subjectSelector = lstSelector,
+                        probeUrl = MmkvManager.decodeSettingsString(AppConfig.PREF_DELAY_TEST_URL) ?: AppConfig.DELAY_TEST_URL,
+                        probeInterval = "3m",
+                        enableConcurrency = true
+                    )
+                }
             }
 
             if (v2rayConfig.routing.domainStrategy == "IPIfNonMatch") {
                 v2rayConfig.routing.rules.add(
                     RulesBean(
                         ip = arrayListOf("0.0.0.0/0", "::/0"),
-                        balancerTag = "proxy-round",
-                        type = "field"
+                        balancerTag = AppConfig.TAG_BALANCER,
                     )
                 )
             } else {
                 v2rayConfig.routing.rules.add(
                     RulesBean(
                         network = "tcp,udp",
-                        balancerTag = "proxy-round",
-                        type = "field"
+                        balancerTag = AppConfig.TAG_BALANCER,
                     )
                 )
             }
@@ -1026,9 +1071,10 @@ object V2rayConfigManager {
             EConfigType.VLESS -> VlessFmt.toOutbound(profileItem)
             EConfigType.TROJAN -> TrojanFmt.toOutbound(profileItem)
             EConfigType.WIREGUARD -> WireguardFmt.toOutbound(profileItem)
-            EConfigType.HYSTERIA2 -> null
+            EConfigType.HYSTERIA2 -> Hysteria2Fmt.toOutbound(profileItem)
             EConfigType.HTTP -> HttpFmt.toOutbound(profileItem)
             EConfigType.POLICYGROUP -> null
+            else -> null
         }
     }
 
@@ -1059,8 +1105,7 @@ object V2rayConfigManager {
             EConfigType.SHADOWSOCKS,
             EConfigType.SOCKS,
             EConfigType.HTTP,
-            EConfigType.TROJAN,
-            EConfigType.HYSTERIA2 ->
+            EConfigType.TROJAN ->
                 return OutboundBean(
                     protocol = configType.name.lowercase(),
                     settings = OutSettingsBean(
@@ -1076,6 +1121,16 @@ object V2rayConfigManager {
                         secretKey = "",
                         peers = listOf(OutSettingsBean.WireGuardBean())
                     )
+                )
+
+            EConfigType.HYSTERIA,
+            EConfigType.HYSTERIA2 ->
+                return OutboundBean(
+                    protocol = EConfigType.HYSTERIA.name.lowercase(),
+                    settings = OutSettingsBean(
+                        servers = null
+                    ),
+                    streamSettings = StreamSettingsBean()
                 )
 
             EConfigType.CUSTOM -> null
@@ -1107,7 +1162,7 @@ object V2rayConfigManager {
         val xhttpExtra = profileItem.xhttpExtra
 
         var sni: String? = null
-        streamSettings.network = if (transport.isEmpty()) NetworkType.TCP.type else transport
+        streamSettings.network = transport.ifEmpty { NetworkType.TCP.type }
         when (streamSettings.network) {
             NetworkType.TCP.type -> {
                 val tcpSetting = StreamSettingsBean.TcpSettingsBean()
@@ -1128,19 +1183,39 @@ object V2rayConfigManager {
             }
 
             NetworkType.KCP.type -> {
-                val kcpsetting = StreamSettingsBean.KcpSettingsBean()
-                kcpsetting.header.type = headerType ?: "none"
+                streamSettings.kcpSettings = StreamSettingsBean.KcpSettingsBean()
+                val udpMaskList = mutableListOf<StreamSettingsBean.FinalMaskBean.MaskBean>()
+                if (!headerType.isNullOrEmpty() && headerType != "none") {
+                    val kcpHeaderType = when {
+                        headerType == "wechat-video" -> "header-wechat"
+                        else -> "header-$headerType"
+                    }
+                    udpMaskList.add(StreamSettingsBean.FinalMaskBean.MaskBean(
+                        type = kcpHeaderType,
+                        settings = if (headerType == "dns" && !host.isNullOrEmpty()) {
+                            StreamSettingsBean.FinalMaskBean.MaskBean.MaskSettingsBean(
+                                domain = host
+                            )
+                        } else {
+                            null
+                        }
+                    ))
+                }
                 if (seed.isNullOrEmpty()) {
-                    kcpsetting.seed = null
+                    udpMaskList.add(StreamSettingsBean.FinalMaskBean.MaskBean(
+                        type = "mkcp-original"
+                    ))
                 } else {
-                    kcpsetting.seed = seed
+                    udpMaskList.add(StreamSettingsBean.FinalMaskBean.MaskBean(
+                        type = "mkcp-aes128gcm",
+                        settings = StreamSettingsBean.FinalMaskBean.MaskBean.MaskSettingsBean(
+                            password = seed
+                        )
+                    ))
                 }
-                if (host.isNullOrEmpty()) {
-                    kcpsetting.header.domain = null
-                } else {
-                    kcpsetting.header.domain = host
-                }
-                streamSettings.kcpSettings = kcpsetting
+                streamSettings.finalmask = StreamSettingsBean.FinalMaskBean(
+                    udp = udpMaskList.toList()
+                )
             }
 
             NetworkType.WS.type -> {
@@ -1196,6 +1271,27 @@ object V2rayConfigManager {
                 sni = authority
                 streamSettings.grpcSettings = grpcSetting
             }
+
+            NetworkType.HYSTERIA.type -> {
+                val hysteriaSetting = StreamSettingsBean.HysteriaSettingsBean(
+                    version = 2,
+                    auth = profileItem.password.orEmpty(),
+                    up = profileItem.bandwidthUp?.ifEmpty { "0" }.orEmpty(),
+                    down = profileItem.bandwidthDown?.ifEmpty { "0" }.orEmpty(),
+                    udphop = null
+                )
+                if (profileItem.portHopping.isNotNullEmpty()) {
+                    hysteriaSetting.udphop = StreamSettingsBean.HysteriaSettingsBean.HysteriaUdpHopBean(
+                        port = profileItem.portHopping,
+                        interval = profileItem.portHoppingInterval
+                            ?.trim()
+                            ?.toIntOrNull()
+                            ?.takeIf { it >= 5 }
+                            ?: 30
+                    )
+                }
+                streamSettings.hysteriaSettings = hysteriaSetting
+            }
         }
         return sni
     }
@@ -1221,24 +1317,21 @@ object V2rayConfigManager {
         } else {
             profileItem.sni
         }
-        val fingerprint = profileItem.fingerPrint
-        val alpns = profileItem.alpn
-        val publicKey = profileItem.publicKey
-        val shortId = profileItem.shortId
-        val spiderX = profileItem.spiderX
-        val mldsa65Verify = profileItem.mldsa65Verify
 
-        streamSettings.security = if (streamSecurity.isEmpty()) null else streamSecurity
+        streamSettings.security = streamSecurity.nullIfBlank()
         if (streamSettings.security == null) return
         val tlsSetting = StreamSettingsBean.TlsSettingsBean(
             allowInsecure = allowInsecure,
-            serverName = if (sni.isNullOrEmpty()) null else sni,
-            fingerprint = if (fingerprint.isNullOrEmpty()) null else fingerprint,
-            alpn = if (alpns.isNullOrEmpty()) null else alpns.split(",").map { it.trim() }.filter { it.isNotEmpty() },
-            publicKey = if (publicKey.isNullOrEmpty()) null else publicKey,
-            shortId = if (shortId.isNullOrEmpty()) null else shortId,
-            spiderX = if (spiderX.isNullOrEmpty()) null else spiderX,
-            mldsa65Verify = if (mldsa65Verify.isNullOrEmpty()) null else mldsa65Verify,
+            serverName = sni.nullIfBlank(),
+            fingerprint = profileItem.fingerPrint.nullIfBlank(),
+            alpn =  profileItem.alpn?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }.takeIf { !it.isNullOrEmpty() },
+            echConfigList = profileItem.echConfigList.nullIfBlank(),
+            echForceQuery = profileItem.echForceQuery.nullIfBlank(),
+            pinnedPeerCertSha256 = profileItem.pinnedCA256.nullIfBlank(),
+            publicKey = profileItem.publicKey.nullIfBlank(),
+            shortId = profileItem.shortId.nullIfBlank(),
+            spiderX = profileItem.spiderX.nullIfBlank(),
+            mldsa65Verify = profileItem.mldsa65Verify.nullIfBlank(),
         )
         if (streamSettings.security == AppConfig.TLS) {
             streamSettings.tlsSettings = tlsSetting

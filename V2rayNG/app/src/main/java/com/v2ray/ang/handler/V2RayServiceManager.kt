@@ -5,38 +5,36 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.core.content.ContextCompat
 import com.v2ray.ang.AppConfig
 import com.v2ray.ang.R
-import com.v2ray.ang.dto.EConfigType
+import com.v2ray.ang.enums.EConfigType
 import com.v2ray.ang.dto.ProfileItem
 import com.v2ray.ang.extension.toast
-import com.v2ray.ang.service.ServiceControl
+import com.v2ray.ang.contracts.ServiceControl
 import com.v2ray.ang.service.V2RayProxyOnlyService
 import com.v2ray.ang.service.V2RayVpnService
 import com.v2ray.ang.util.MessageUtil
 import com.v2ray.ang.util.Utils
-import go.Seq
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import libv2ray.CoreCallbackHandler
 import libv2ray.CoreController
-import libv2ray.Libv2ray
 import java.lang.ref.SoftReference
 
 object V2RayServiceManager {
 
-    private val coreController: CoreController = Libv2ray.newCoreController(CoreCallback())
+    private val coreController: CoreController = V2RayNativeManager.newCoreController(CoreCallback())
     private val mMsgReceive = ReceiveMessageHandler()
     private var currentConfig: ProfileItem? = null
 
     var serviceControl: SoftReference<ServiceControl>? = null
         set(value) {
             field = value
-            Seq.setContext(value?.get()?.getService()?.applicationContext)
-            Libv2ray.initCoreEnv(Utils.userAssetPath(value?.get()?.getService()), Utils.getDeviceIdForXUDPBaseKey())
+            V2RayNativeManager.initCoreEnv(value?.get()?.getService())
         }
 
     /**
@@ -70,7 +68,7 @@ object V2RayServiceManager {
      * @param context The context from which the service is stopped.
      */
     fun stopVService(context: Context) {
-        context.toast(R.string.toast_services_stop)
+        //context.toast(R.string.toast_services_stop)
         MessageUtil.sendMsg2Service(context, AppConfig.MSG_STATE_STOP, "")
     }
 
@@ -110,7 +108,7 @@ object V2RayServiceManager {
         } else {
             context.toast(R.string.toast_services_start)
         }
-        val intent = if ((MmkvManager.decodeSettingsString(AppConfig.PREF_MODE) ?: AppConfig.VPN) == AppConfig.VPN) {
+        val intent = if (SettingsManager.isVpnMode()) {
             Intent(context.applicationContext, V2RayVpnService::class.java)
         } else {
             Intent(context.applicationContext, V2RayProxyOnlyService::class.java)
@@ -123,7 +121,7 @@ object V2RayServiceManager {
      * `registerReceiver(Context, BroadcastReceiver, IntentFilter, int)`.
      * Starts the V2Ray core service.
      */
-    fun startCoreLoop(): Boolean {
+    fun startCoreLoop(vpnInterface: ParcelFileDescriptor?): Boolean {
         if (coreController.isRunning) {
             return false
         }
@@ -147,9 +145,14 @@ object V2RayServiceManager {
         }
 
         currentConfig = config
+        var tunFd = vpnInterface?.fd ?: 0
+        if (SettingsManager.isUsingHevTun()) {
+            tunFd = 0
+        }
 
         try {
-            coreController.startLoop(result.content)
+            NotificationManager.showNotification(currentConfig)
+            coreController.startLoop(result.content, tunFd)
         } catch (e: Exception) {
             Log.e(AppConfig.TAG, "Failed to start Core loop", e)
             return false
@@ -163,10 +166,9 @@ object V2RayServiceManager {
 
         try {
             MessageUtil.sendMsg2UI(service, AppConfig.MSG_STATE_START_SUCCESS, "")
-            NotificationManager.showNotification(currentConfig)
+            //NotificationManager.showNotification(currentConfig)
             NotificationManager.startSpeedNotification(currentConfig)
 
-            PluginServiceManager.runPlugin(service, config, result.socksPort)
         } catch (e: Exception) {
             Log.e(AppConfig.TAG, "Failed to startup service", e)
             return false
@@ -200,7 +202,6 @@ object V2RayServiceManager {
         } catch (e: Exception) {
             Log.e(AppConfig.TAG, "Failed to unregister broadcast receiver", e)
         }
-        PluginServiceManager.stopPlugin()
 
         return true
     }

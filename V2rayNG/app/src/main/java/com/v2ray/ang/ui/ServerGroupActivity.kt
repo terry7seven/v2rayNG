@@ -4,14 +4,16 @@ import android.os.Bundle
 import android.text.TextUtils
 import android.view.Menu
 import android.view.MenuItem
+import android.widget.ArrayAdapter
 import androidx.appcompat.app.AlertDialog
 import com.v2ray.ang.R
 import com.v2ray.ang.databinding.ActivityServerGroupBinding
-import com.v2ray.ang.dto.EConfigType
+import com.v2ray.ang.enums.EConfigType
 import com.v2ray.ang.dto.ProfileItem
+import com.v2ray.ang.extension.isNotNullEmpty
 import com.v2ray.ang.extension.toast
 import com.v2ray.ang.extension.toastSuccess
-import android.widget.ArrayAdapter
+import com.v2ray.ang.handler.AngConfigManager
 import com.v2ray.ang.handler.MmkvManager
 import com.v2ray.ang.util.Utils
 
@@ -31,8 +33,8 @@ class ServerGroupActivity : BaseActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(binding.root)
-        title = EConfigType.POLICYGROUP.toString()
+        //setContentView(binding.root)
+        setContentViewWithToolbar(binding.root, showHomeAsUp = true, title = EConfigType.POLICYGROUP.toString())
 
         val config = MmkvManager.decodeServerConfig(editGuid)
         populateSubscriptionSpinner()
@@ -66,6 +68,11 @@ class ServerGroupActivity : BaseActivity() {
     private fun clearServer(): Boolean {
         binding.etRemarks.text = null
         binding.etPolicyGroupFilter.text = null
+
+        if (subscriptionId.isNotNullEmpty()) {
+            val pos = subIds.indexOf(subscriptionId).let { if (it >= 0) it else 0 }
+            binding.spPolicyGroupSubId.setSelection(pos)
+        }
         return true
     }
 
@@ -90,6 +97,9 @@ class ServerGroupActivity : BaseActivity() {
         if (config.subscriptionId.isEmpty() && !subscriptionId.isNullOrEmpty()) {
             config.subscriptionId = subscriptionId.orEmpty()
         }
+
+        config.description =  "${binding.spPolicyGroupType.selectedItem} - ${binding.spPolicyGroupSubId.selectedItem} - ${config.policyGroupFilter}"
+
         MmkvManager.encodeServerConfig(editGuid, config)
         toastSuccess(R.string.toast_success)
         finish()
@@ -119,13 +129,13 @@ class ServerGroupActivity : BaseActivity() {
         val displayList = mutableListOf(getString(R.string.filter_config_all)) //none
         subIds.clear()
         subIds.add("") // index 0 => All
-        subs.forEach { (id, item) ->
+        subs.forEach { sub ->
             val name = when {
-                item.remarks.isNotBlank() -> item.remarks
-                else -> id
+                sub.subscription.remarks.isNotBlank() -> sub.subscription.remarks
+                else -> sub.guid
             }
             displayList.add(name)
-            subIds.add(id)
+            subIds.add(sub.guid)
         }
         val subAdapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, displayList)
         subAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
